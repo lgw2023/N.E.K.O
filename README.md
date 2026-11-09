@@ -1,0 +1,1 @@
+UI comparison for ChatGPT subscription provider PR. Rendered repository templates before (09e5160) and after, using zh-CN strings, real CSS and a mock signed-out account response. No credentials or personal data. Screenshots are review artifacts, not production assets.
