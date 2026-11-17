@@ -719,7 +719,6 @@ class LexicalDecisionModel:
             summaries.append(f"- {plugin_id}: {short}")
         system = _loc(TASK_BRAIN_COARSE_SCREEN_PROMPT, lang).format(
             plugin_summaries="\n".join(summaries),
-            user_text=user_text,
         )
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user_text}]
         try:

@@ -22,6 +22,8 @@ two-stage filter. Every test runs once per implementation in
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 import pytest
@@ -213,6 +215,32 @@ def test_description_line_shows_eight_fields_and_twelve_enum_values(impl):
     assert f"f0:string enum=[{shown}|... +3 more]" in line
     assert "f7:string" in line
     assert "f8:string" not in line
+
+
+def test_schema_field_descriptions_are_bounded_and_kept_on_one_line(impl):
+    from utils.tokenize import count_tokens
+
+    description = 'Search for "the resolved topic".\n' + "relevant context " * 100 + "NOT_SHOWN"
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": description},
+            "mode": {"type": "string", "enum": ["brief", "full"], "description": "Return detail."},
+            "invalid": {"type": "string", "description": {"not": "text"}},
+        },
+        "required": ["query"],
+    }
+    (line,) = impl.desc_lines([plugin("search", "Search", [entry("run", input_schema=schema)])])
+
+    descriptions = [json.loads(value) for value in re.findall(r'description=("(?:[^"\\]|\\.)*")', line)]
+    assert len(descriptions) == 2
+    assert descriptions[0].startswith('Search for "the resolved topic".')
+    assert 0 < count_tokens(descriptions[0]) <= 32
+    assert descriptions[1] == "Return detail."
+    assert "\n" not in line and "NOT_SHOWN" not in line
+    assert "mode:string enum=[brief|full]" in line
+    assert "invalid:string required=['query']" in line
+    assert schema["properties"]["query"]["description"] == description
 
 
 def test_description_lines_skip_plugins_without_id_or_visible_entries(impl):
@@ -433,7 +461,8 @@ async def test_coarse_screen_reads_short_descriptions(impl):
     long_line = next(line for line in coarse.system.splitlines() if line.startswith("- bulk01: "))
     assert long_line.endswith("...")
     assert count_tokens(long_line[len("- bulk01: ") :]) <= AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
-    assert "make me laugh" in coarse.system
+    assert "make me laugh" not in coarse.system
+    assert coarse.user == "make me laugh"
 
 
 # ---------------------------------------------------------------------------

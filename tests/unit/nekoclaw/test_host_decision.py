@@ -135,6 +135,55 @@ async def test_the_one_exception_is_a_single_small_model_call(coarse, kind):
     assert triage.coarse_ids == coarse
 
 
+@pytest.mark.parametrize("lang", LANGUAGES)
+async def test_coarse_screen_sends_the_request_only_once(lang, record_property):
+    llm = FakeDecisionLLM(coarse=["lamp"])
+    req = request("zzz qqq", user_text="yyy vvv", lang=lang)
+
+    triage = await LexicalDecisionModel(llm).triage(req)
+
+    assert (triage.kind, triage.model_calls) == ("new", 1)
+    assert llm.tiers() == ["coarse"]
+    system, user = llm.last("coarse")
+    assert user == {"role": "user", "content": req.match_text}
+    assert req.user_text not in system["content"]
+    assert req.dispatch_text not in system["content"]
+    from utils.tokenize import count_tokens
+
+    record_property("coarse_input_tokens", sum(count_tokens(message["content"]) for message in (system, user)))
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+async def test_fine_selection_distinguishes_semantic_and_verbatim_arguments(lang, record_property):
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search terms for the topic resolved in TASK."},
+            "original_request": {"type": "string", "description": "The user's exact words, copied verbatim."},
+        },
+    }
+    plugins = [plugin("search", "Search", [entry("run", input_schema=schema)])]
+    args = {"query": "AI agent orchestration recent developments", "original_request": "它们最近怎么样？"}
+    llm = FakeDecisionLLM(fine=[pick_plugin("search", "run", args)])
+    req = request(
+        "Search for recent developments in AI agent orchestration.",
+        user_text=args["original_request"], plugins=plugins, lang=lang,
+    )
+
+    selected = await LexicalDecisionModel(llm).select(req, Triage(kind="new"))
+
+    system = llm.last("fine")[0]["content"]
+    argument_rule = next(line for line in system.splitlines() if "query" in line and "USER_SAID" in line)
+    assert "TASK" in argument_rule and "schema" in argument_rule, lang
+    assert schema["properties"]["query"]["description"] in system
+    assert schema["properties"]["original_request"]["description"] in system
+    assert selected.plugin_args == args
+    assert (selected.route, selected.model_calls, llm.tiers()) == ("plugin", 1, ["fine"])
+    from utils.tokenize import count_tokens
+
+    record_property("fine_input_tokens", sum(count_tokens(message["content"]) for message in llm.last("fine")))
+
+
 @pytest.mark.parametrize(
     "text",
     ["别查了", "算了，不用了", "stop that", "cancel it please", "やめて", "그만해", "хватит", "ya no, déjalo"],
@@ -525,6 +574,33 @@ async def test_large_catalog_costs_coarse_screen_plus_fine_selection():
     assert selection.model_calls == 2
     assert (selection.route, selection.plugin_id) == ("plugin", "bulk03")
     assert selection.shown_plugin_ids == ["bulk03", "bulk11"]
+
+
+async def test_schema_descriptions_count_towards_the_existing_coarse_threshold(record_property):
+    from config import AGENT_PLUGIN_DESC_BM25_THRESHOLD
+    from nekoclaw.host.selection import build_desc_lines
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    properties = {f"f{n}": {"type": "string"} for n in range(8)}
+    schema = {"type": "object", "properties": properties}
+    candidate = plugin("search", "", [entry("run", input_schema=schema)])
+    overhead = count_tokens("\n".join(build_desc_lines([candidate])))
+    candidate["description"] = truncate_to_tokens("catalog " * 3000, AGENT_PLUGIN_DESC_BM25_THRESHOLD - overhead - 16)
+    before = count_tokens("\n".join(build_desc_lines([candidate])))
+    for definition in properties.values():
+        definition["description"] = "Relevant context for the resolved task. " * 20
+    after = count_tokens("\n".join(build_desc_lines([candidate])))
+    record_property("catalog_tokens_before", before)
+    record_property("catalog_tokens_after", after)
+    assert before <= AGENT_PLUGIN_DESC_BM25_THRESHOLD < after
+
+    llm = FakeDecisionLLM(coarse=["search"], fine=[pick_plugin("search", "run")])
+    req = request("search", plugins=[candidate])
+    selected = await LexicalDecisionModel(llm).select(req, Triage(kind="new"))
+
+    assert AGENT_PLUGIN_DESC_BM25_THRESHOLD == 3000
+    assert llm.tiers() == ["coarse", "fine"]
+    assert (selected.route, selected.model_calls, selected.shown_plugin_ids) == ("plugin", 2, ["search"])
 
 
 async def test_coarse_screen_of_the_first_round_is_not_paid_for_twice():

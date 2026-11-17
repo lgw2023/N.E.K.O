@@ -116,6 +116,56 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     assert report.payload["task_id"] == receipt.commission_id
 
 
+@pytest.mark.parametrize(
+    ("query_description", "query"),
+    [
+        ("Search terms for the topic resolved in TASK.", "AI agent orchestration recent developments"),
+        ("The user's exact words, copied verbatim.", "它们最近怎么样？"),
+    ],
+    ids=["semantic-query", "verbatim-query"],
+)
+async def test_resolved_task_and_schema_reach_selection_and_run(server, hosts, tmp_path, query_description, query):
+    task = "Search for recent developments in AI agent orchestration."
+    user_said = "它们最近怎么样？"
+    original_description = "The user's exact words, copied verbatim."
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": query_description},
+            "original_request": {"type": "string", "description": original_description},
+        },
+        "required": ["query", "original_request"],
+    }
+
+    async def search(args):
+        return finish({"reply": "Found relevant results"})
+
+    server.add_plugin(
+        plugin("web", "Search the web", [entry("search", "Search", input_schema=schema)], keywords=["Search"]),
+        search=search,
+    )
+    llm = FakeDecisionLLM(fine=[pick_plugin("web", "search", {"query": query, "original_request": user_said})])
+    host = _host(hosts, tmp_path, server, llm)
+
+    receipt = await _dispatch(host, task, user_text=user_said, conversation_id="contextual-query", lang="en")
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    system, user = llm.last("fine")
+    assert user["content"] == f"TASK: {task}\nUSER_SAID: {user_said}"
+    assert query_description in system["content"]
+    assert original_description in system["content"]
+    argument_rule = next(line for line in system["content"].splitlines() if "query" in line and "USER_SAID" in line)
+    assert "TASK" in argument_rule and "schema" in argument_rule
+    assert (done.route, done.plugin_id, done.entry_id) == ("plugin", "web", "search")
+    assert llm.tiers() == ["fine"]
+    (call,) = server.calls
+    assert call["args"]["query"] == query
+    assert call["args"]["original_request"] == user_said
+    (run_request,) = server.run_requests
+    assert run_request["args"]["_ctx"]["latest_user_request"] == user_said
+    assert run_request["args"]["_ctx"]["conversation_id"] == "contextual-query"
+
+
 async def test_the_result_is_stored_with_the_status_not_after_it(server, hosts, tmp_path, monkeypatch):
     # A report stored in a transaction of its own could be lost between the
     # two writes; the direct route stores it with the status change instead.

@@ -33,6 +33,7 @@ with the commissions on the ledger and are not part of plugin selection.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import Counter
@@ -112,6 +113,9 @@ def find_entry(plugins: Iterable[Any], plugin_id: str, entry_id: str | None) -> 
 
 
 def _schema_hint(entry: dict[str, Any]) -> str:
+    from config.nekoclaw_settings import PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS
+    from utils.tokenize import truncate_to_tokens
+
     schema = entry.get("input_schema")
     if not isinstance(schema, dict):
         return ""
@@ -122,6 +126,7 @@ def _schema_hint(entry: dict[str, Any]) -> str:
     for name, definition in list(props.items())[:8]:
         field_type = definition.get("type", "any") if isinstance(definition, dict) else "any"
         enum_hint = ""
+        description_hint = ""
         if isinstance(definition, dict):
             enum_values = definition.get("enum")
             if isinstance(enum_values, list) and enum_values:
@@ -132,7 +137,11 @@ def _schema_hint(entry: dict[str, Any]) -> str:
                     enum_hint = f" enum=[{inner}|... +{len(enum_values) - 12} more]"
                 else:
                     enum_hint = f" enum=[{inner}]"
-        fields.append(f"{name}:{field_type}{enum_hint}")
+            description = definition.get("description")
+            if isinstance(description, str) and description.strip():
+                description = truncate_to_tokens(" ".join(description.split()), PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS)
+                description_hint = f" description={json.dumps(description, ensure_ascii=False)}"
+        fields.append(f"{name}:{field_type}{enum_hint}{description_hint}")
     required = schema.get("required", [])
     required_hint = f" required={required}" if required else ""
     return f" args({', '.join(fields)}{required_hint})"

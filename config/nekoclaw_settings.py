@@ -107,6 +107,10 @@ brief, mark included."""
 # What the decision model is shown
 # ---------------------------------------------------------------------------
 
+PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS = 32
+"""Cap on each schema field's description in the plugin-selection prompt.
+Descriptions count towards the existing coarse-screen threshold."""
+
 DECISION_LEDGER_ROWS = 3
 """Ledger rows shown to the fine selection ("the two or three related ones")."""
 
